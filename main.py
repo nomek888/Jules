@@ -16,7 +16,7 @@ logging.basicConfig(
 # Get a logger instance for this module
 logger = logging.getLogger(__name__)
 
-TOKEN = "7639447946:AAHzVWhmRA184lRYoQk44T_kyM4anupgx2s"
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 OUTPUT_FILENAME = "video.mp4"
 
 async def read_progress(stderr_pipe, total_duration_ms: float, update: Update, context: ContextTypes.DEFAULT_TYPE, progress_message_id: int):
@@ -279,7 +279,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "You can use the following commands:\n"
         "/start - Show this welcome message\n"
         "/help - Show help information\n"
-        "/record <url> - Download a video from an M3U8 URL (up to 2GB).\n"
+        "/record &lt;url&gt; - Download a video from an M3U8 URL (up to 2GB).\n"
     )
     try:
         await update.message.reply_html(welcome_message)

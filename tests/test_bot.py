@@ -55,8 +55,29 @@ class TestBotHandlers:
         assert "Hello TestUser!" in call_args
         assert "/start" in call_args
         assert "/help" in call_args
-        assert "/record" in call_args
+        assert "/record" in call_args # General check from original test
         logger_mock.info.assert_called_with(f"User {mock_update.effective_user.id} ({mock_update.effective_user.first_name}) started the bot.")
+
+    @patch('main.TOKEN', 'test_token_for_handlers')
+    async def test_start_command_html_corrected(self, mock_update, mock_context, _): # renamed patched_token_unused
+        """Tests if the /start command output contains the HTML escaped <url>."""
+        logger_mock = MagicMock()
+        with patch('main.logger', logger_mock): # Patch logger to avoid NoneType errors if not setup
+            await main.start(mock_update, mock_context)
+
+        mock_update.message.reply_html.assert_called_once()
+        call_args = mock_update.message.reply_html.call_args[0][0]
+
+        # Crucial assertion for this test
+        assert "/record &lt;url&gt; - Download a video from an M3U8 URL (up to 2GB)." in call_args
+
+        # Ensure the non-escaped version is NOT present
+        assert "/record <url>" not in call_args
+
+        # Optional: check other parts of the message if desired
+        assert "Hello TestUser!" in call_args
+        logger_mock.info.assert_called_with(f"User {mock_update.effective_user.id} ({mock_update.effective_user.first_name}) started the bot.")
+
 
     @patch('main.TOKEN', 'test_token_for_handlers')
     async def test_help_command(self, mock_update, mock_context, patched_token_unused):
@@ -89,7 +110,7 @@ class TestBotHandlers:
         "example.com/stream.m3u8",
         "https://justawebsite.com"
     ])
-    async def test_record_command_invalid_url_format(self, mock_update, mock_context, invalid_url, patched_token_unused):
+    async def test_record_command_invalid_url_format(self, mock_update, mock_context, invalid_url, _): # renamed
         mock_context.args = [invalid_url]
         logger_mock = MagicMock()
         with patch('main.logger', logger_mock):
@@ -157,13 +178,13 @@ class TestDownloadVideoFunctionality:
 
     @patch('main.os.path.exists')
     @patch('main.os.remove')
-    @patch('main.ffmpeg.probe', new_callable=AsyncMock) # Mock probe as AsyncMock for asyncio.to_thread
+    @patch('main.ffmpeg.probe', new_callable=MagicMock) # Corrected: MagicMock for to_thread
     @patch('main.ffmpeg.input') # This will return a mock stream object
     async def test_record_command_download_success_upload_success(
-        self, mock_ffmpeg_input, mock_ffmpeg_probe,
+        self, mock_ffmpeg_input, mock_ffmpeg_probe, # mock_ffmpeg_probe is now MagicMock
         mock_os_remove, mock_os_path_exists,
         mock_update, mock_context, mock_ffmpeg_probe_valid_duration, mock_ffmpeg_process,
-        patched_token_unused
+        _ # renamed
     ):
         test_url = "https://example.com/valid_stream.m3u8"
         mock_context.args = [test_url]
@@ -248,11 +269,11 @@ class TestDownloadVideoFunctionality:
 
     @patch('main.os.path.exists')
     @patch('main.os.remove')
-    @patch('main.ffmpeg.probe', new_callable=AsyncMock)
+    @patch('main.ffmpeg.probe', new_callable=MagicMock) # Corrected: MagicMock for to_thread
     async def test_download_video_probe_error(
-        self, mock_ffmpeg_probe, mock_os_remove, mock_os_path_exists,
+        self, mock_ffmpeg_probe, mock_os_remove, mock_os_path_exists, # mock_ffmpeg_probe is now MagicMock
         mock_update, mock_context,
-        patched_token_unused
+        _ # renamed
     ):
         test_url = "https://example.com/invalid_probe.m3u8"
         mock_context.args = [test_url]
@@ -279,13 +300,13 @@ class TestDownloadVideoFunctionality:
 
     @patch('main.os.path.exists')
     @patch('main.os.remove')
-    @patch('main.ffmpeg.probe', new_callable=AsyncMock)
+    @patch('main.ffmpeg.probe', new_callable=MagicMock) # Corrected: MagicMock for to_thread
     @patch('main.ffmpeg.input')
     async def test_download_video_ffmpeg_download_error(
-        self, mock_ffmpeg_input, mock_ffmpeg_probe,
+        self, mock_ffmpeg_input, mock_ffmpeg_probe, # mock_ffmpeg_probe is now MagicMock
         mock_os_remove, mock_os_path_exists,
         mock_update, mock_context, mock_ffmpeg_probe_valid_duration,
-        patched_token_unused
+        _ # renamed
     ):
         test_url = "https://example.com/download_fails.m3u8"
         mock_context.args = [test_url]
@@ -323,13 +344,13 @@ class TestDownloadVideoFunctionality:
 
     @patch('main.os.path.exists')
     @patch('main.os.remove')
-    @patch('main.ffmpeg.probe', new_callable=AsyncMock)
+    @patch('main.ffmpeg.probe', new_callable=MagicMock) # Corrected: MagicMock for to_thread
     @patch('main.ffmpeg.input')
     async def test_download_video_upload_error(
-        self, mock_ffmpeg_input, mock_ffmpeg_probe,
+        self, mock_ffmpeg_input, mock_ffmpeg_probe, # mock_ffmpeg_probe is now MagicMock
         mock_os_remove, mock_os_path_exists,
         mock_update, mock_context, mock_ffmpeg_probe_valid_duration, mock_ffmpeg_process, # Use successful download process
-        patched_token_unused
+        _ # renamed
     ):
         test_url = "https://example.com/upload_fails.m3u8"
         mock_context.args = [test_url]
@@ -407,15 +428,7 @@ def mock_run_async_fixture(mock_ffmpeg_process): # Renamed
 # mock_run_async = MagicMock(return_value=mock_ffmpeg_process) (this is correct)
 # mock_stream.run_async = mock_run_async (this is correct)
 
-# The new_callable=AsyncMock for ffmpeg.probe was indeed an oversight for `to_thread`.
-# It should be `MagicMock` and its `return_value` set.
-# The test code above uses `@patch('main.ffmpeg.probe', new_callable=AsyncMock)` which is not ideal for `to_thread`.
-# It should be `@patch('main.ffmpeg.probe', new_callable=MagicMock)` or simply `@patch('main.ffmpeg.probe')`.
-# I will proceed with the current generated code but acknowledge this subtlety.
-# The tests might still pass if AsyncMock happens to work due to how `to_thread` handles it,
-# but semantically, the target of `to_thread` is a synchronous callable.
-
-# The `patched_token_unused` parameter in test methods needs to be consistent.
+# The `patched_token_unused` parameter in test methods needs to be consistent. (Corrected to `_`)
 
 # Final check on `mock_ffmpeg_process.stderr`: It's an async generator. `read_progress` uses `async for line_bytes in stderr_pipe:`. This is correct.
 # `process.wait()` is awaited directly in `main.py` after `asyncio.shield`. `mock_ffmpeg_process.wait` is an `AsyncMock`, this is fine.
