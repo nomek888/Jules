@@ -1,0 +1,5 @@
+pytest
+pytest-asyncio
+# Add other development dependencies here if needed, e.g., linters
+# For mocking, unittest.mock is part of the standard library for Python 3.3+
+# If older Python or more advanced mocking features are needed, 'mock' or 'pytest-mock' could be added.
