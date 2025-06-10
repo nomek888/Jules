@@ -7,8 +7,8 @@ import html # For escaping HTML in URLs shown to user
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import TelegramError, NetworkError, TimedOut
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler # Added CallbackQueryHandler
-from typing import Optional # For Optional type hint
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, PicklePersistence # Added PicklePersistence
+from typing import Optional
 
 # Enable logging
 logging.basicConfig(
@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = "7639447946:AAHzVWhmRA184lRYoQk44T_kyM4anupgx2s"
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 OUTPUT_FILENAME = "video.mp4"
 
 async def read_progress(stderr_pipe, total_duration_ms: float, update: Update, context: ContextTypes.DEFAULT_TYPE, progress_message_id: int):
@@ -465,7 +465,11 @@ def main() -> None:
     if TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
         logger.critical("BOT TOKEN IS NOT SET!")
         return
-    application = Application.builder().token(TOKEN).build()
+
+    # Initialize PicklePersistence
+    my_persistence = PicklePersistence(filepath="bot_persistence_data.pkl")
+
+    application = Application.builder().token(TOKEN).persistence(my_persistence).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("record", record_video))
