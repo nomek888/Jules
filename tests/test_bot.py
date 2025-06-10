@@ -121,6 +121,153 @@ class TestBotHandlers:
         assert "The URL provided does not seem to be a valid M3U8 link." in call_args
         logger_mock.info.assert_called_with(f"User {mock_update.effective_user.id} provided invalid URL: {invalid_url}")
 
+    @patch('main.TOKEN', 'test_token_for_handlers')
+    async def test_record_command_prompts_for_duration(self, mock_update, mock_context, _):
+        test_url = "http://example.com/stream.m3u8"
+        mock_context.args = [test_url]
+
+        # Simulate that reply_html returns a message object with an ID
+        mock_prompt_message = AsyncMock()
+        mock_prompt_message.message_id = 999
+        mock_update.message.reply_html = AsyncMock(return_value=mock_prompt_message)
+
+        # Ensure user_data is a dict for the test
+        mock_context.user_data = {}
+
+        logger_mock = MagicMock()
+        with patch('main.logger', logger_mock):
+            await main.record_video(mock_update, mock_context)
+
+        mock_update.message.reply_html.assert_called_once()
+        call_args_kwargs = mock_update.message.reply_html.call_args[1]
+
+        assert "Please select recording duration for" in call_args_kwargs['text']
+        assert f"<code>{main.html.escape(test_url)}</code>" in call_args_kwargs['text']
+
+        assert 'reply_markup' in call_args_kwargs
+        reply_markup = call_args_kwargs['reply_markup']
+        assert isinstance(reply_markup, main.InlineKeyboardMarkup)
+
+        expected_buttons = [
+            ("10 seconds", "10s"), ("5 minutes", "5m"),
+            ("30 minutes", "30m"), ("1 hour", "1h"),
+            ("Unlimited", "unlimited")
+        ]
+
+        actual_buttons = []
+        for row in reply_markup.inline_keyboard:
+            for button in row:
+                actual_buttons.append((button.text, button.callback_data))
+
+        assert len(actual_buttons) == len(expected_buttons)
+        for expected_text, expected_data in expected_buttons:
+            assert any(b.text == expected_text and b.callback_data == expected_data for b in actual_buttons)
+
+        # Check context.user_data
+        expected_user_data_key = str(mock_prompt_message.message_id)
+        assert expected_user_data_key in mock_context.user_data
+        assert mock_context.user_data[expected_user_data_key]['url'] == test_url
+        assert mock_context.user_data[expected_user_data_key]['chat_id'] == mock_update.effective_chat.id
+        assert mock_context.user_data[expected_user_data_key]['user_id'] == mock_update.effective_user.id
+        logger_mock.info.assert_any_call(f"Duration prompt sent for URL {test_url} to user {mock_update.effective_user.id}, prompt_message_id {mock_prompt_message.message_id}. Stored URL in user_data.")
+
+
+# Fixture for callback query updates
+@pytest.fixture
+def mock_callback_query_update(mock_update): # Can reuse parts of mock_update
+    # Overwrite message part to be a CallbackQuery
+    mock_query = AsyncMock(spec=main.CallbackQuery) # CallbackQuery is not a class in telegram.ext, it's an attribute of Update
+    mock_query.data = "5m" # Default callback data
+    mock_query.message = AsyncMock(spec=main.Message)
+    mock_query.message.message_id = 999 # ID of the message with buttons
+    mock_query.message.chat_id = 12345
+    mock_query.from_user = mock_update.effective_user # Reuse user from mock_update
+    mock_query.answer = AsyncMock()
+
+    update = MagicMock(spec=main.Update) # Create a new Update for callback query
+    update.callback_query = mock_query
+    update.effective_chat = mock_update.effective_chat # Reuse chat
+    update.effective_user = mock_update.effective_user # Reuse user
+    return update
+
+
+@pytest.mark.asyncio
+@patch('main.TOKEN', 'test_token_for_callbacks')
+class TestDurationCallback:
+
+    @patch('main.download_video', new_callable=AsyncMock) # Mock the actual download_video function
+    async def test_duration_button_callback_valid(
+        self, mock_download_video, mock_callback_query_update, mock_context, _
+    ):
+        test_url = "http://example.com/callback_stream.m3u8"
+        prompt_message_id = mock_callback_query_update.callback_query.message.message_id
+
+        # Pre-populate user_data as if record_video stored it
+        mock_context.user_data = {
+            str(prompt_message_id): {
+                'url': test_url,
+                'chat_id': mock_callback_query_update.effective_chat.id,
+                'user_id': mock_callback_query_update.effective_user.id
+            }
+        }
+        mock_callback_query_update.callback_query.data = "5m" # User selected 5 minutes
+
+        logger_mock = MagicMock()
+        with patch('main.logger', logger_mock):
+            await main.duration_button_callback(mock_callback_query_update, mock_context)
+
+        mock_callback_query_update.callback_query.answer.assert_called_once()
+
+        # Check that the original message was edited
+        mock_context.bot.edit_message_text.assert_called_once()
+        edit_args_kwargs = mock_context.bot.edit_message_text.call_args[1]
+        assert edit_args_kwargs['chat_id'] == mock_callback_query_update.effective_chat.id
+        assert edit_args_kwargs['message_id'] == prompt_message_id
+        assert "Duration selected: 5 minutes." in edit_args_kwargs['text']
+        assert edit_args_kwargs['reply_markup'] is None # Keyboard removed
+
+        # Check that user_data was cleared
+        assert str(prompt_message_id) not in mock_context.user_data
+
+        # Check that download_video was called with correct parameters
+        mock_download_video.assert_called_once()
+        dl_args_kwargs = mock_download_video.call_args[1]
+        assert dl_args_kwargs['url'] == test_url
+        assert dl_args_kwargs['duration_limit_seconds'] == 5 * 60 # 300 seconds
+        assert dl_args_kwargs['original_message_id'] == prompt_message_id
+        assert dl_args_kwargs['user_friendly_duration_str'] == "5 minutes"
+        # The 'update' object passed to download_video would be mock_callback_query_update
+        assert dl_args_kwargs['update'] == mock_callback_query_update
+
+
+    async def test_duration_button_callback_invalid_or_stale_data(
+        self, mock_callback_query_update, mock_context, _
+    ):
+        prompt_message_id = mock_callback_query_update.callback_query.message.message_id
+
+        # Ensure user_data is empty or doesn't contain the key
+        mock_context.user_data = {}
+        mock_callback_query_update.callback_query.data = "10s" # Any valid data format
+
+        logger_mock = MagicMock()
+        mock_download_video = AsyncMock() # To ensure it's NOT called
+        with patch('main.logger', logger_mock), \
+             patch('main.download_video', mock_download_video):
+            await main.duration_button_callback(mock_callback_query_update, mock_context)
+
+        mock_callback_query_update.callback_query.answer.assert_called_once()
+
+        # Check that the message was edited to show an error
+        mock_context.bot.edit_message_text.assert_called_once()
+        edit_args_kwargs = mock_context.bot.edit_message_text.call_args[1]
+        assert "This recording request has expired" in edit_args_kwargs['text']
+        assert edit_args_kwargs['reply_markup'] is None
+
+        # Assert download_video was NOT called
+        mock_download_video.assert_not_called()
+        logger_mock.warning.assert_any_call(f"No URL found in user_data for message_id {prompt_message_id}. User {mock_callback_query_update.effective_user.id}. It might be an old message or data was cleared.")
+
+
 # More test classes and cases will follow for download_video scenarios
 # This requires more complex mocking of ffmpeg and os functions.
 
@@ -178,93 +325,107 @@ class TestDownloadVideoFunctionality:
 
     @patch('main.os.path.exists')
     @patch('main.os.remove')
-    @patch('main.ffmpeg.probe', new_callable=MagicMock) # Corrected: MagicMock for to_thread
-    @patch('main.ffmpeg.input') # This will return a mock stream object
-    async def test_record_command_download_success_upload_success(
-        self, mock_ffmpeg_input, mock_ffmpeg_probe, # mock_ffmpeg_probe is now MagicMock
-        mock_os_remove, mock_os_path_exists,
-        mock_update, mock_context, mock_ffmpeg_probe_valid_duration, mock_ffmpeg_process,
-        _ # renamed
+    @patch('main.ffmpeg.probe', new_callable=MagicMock)
+    @patch('main.ffmpeg.input')
+    async def test_record_command_download_success_upload_success_via_callback(
+        self, mock_ffmpeg_input, mock_ffmpeg_probe,
+        mock_os_remove, mock_os_path_exists, # Patches for os
+        mock_callback_query_update, # Use callback update
+        mock_context,
+        mock_ffmpeg_probe_valid_duration, mock_ffmpeg_process,
+        _
     ):
-        test_url = "https://example.com/valid_stream.m3u8"
-        mock_context.args = [test_url]
+        # This test now simulates the flow starting from a callback query
+        test_url = "http://example.com/callback_stream.m3u8"
+        prompt_message_id = mock_callback_query_update.callback_query.message.message_id
+        user_friendly_duration = "5 minutes" # Corresponds to "5m"
+        duration_seconds = 5 * 60
 
-        # Configure mocks
-        mock_os_path_exists.return_value = False # Simulate file does not exist initially
-        mock_ffmpeg_probe.return_value = mock_ffmpeg_probe_valid_duration # Probe returns valid duration
+        # Setup user_data as if record_video stored it
+        mock_context.user_data = {
+            str(prompt_message_id): {
+                'url': test_url,
+                'chat_id': mock_callback_query_update.effective_chat.id,
+                'user_id': mock_callback_query_update.effective_user.id
+            }
+        }
+        mock_callback_query_update.callback_query.data = "5m" # User selected 5 minutes
 
-        # ffmpeg.input() returns a stream object, which then has .output().run_async()
+        # Configure mocks for download_video part
+        mock_os_path_exists.return_value = False
+        mock_ffmpeg_probe.return_value = mock_ffmpeg_probe_valid_duration
+
         mock_stream = MagicMock()
         mock_ffmpeg_input.return_value = mock_stream
-
-        # stream.run_async() is called via asyncio.to_thread, so it needs to be a standard MagicMock
-        # that returns our mock_ffmpeg_process
         mock_run_async = MagicMock(return_value=mock_ffmpeg_process)
         mock_stream.run_async = mock_run_async
-        # Patching stream.output to return the same stream mock to chain .run_async
         mock_stream.output.return_value = mock_stream
 
+        # Mock for builtins.open
+        mock_open = MagicMock()
+        mock_open.return_value.__enter__.return_value = MagicMock() # Simulate file object
+        mock_open.return_value.__exit__.return_value = None
 
-        # Patch logger inside main module
         logger_mock = MagicMock()
-        with patch('main.logger', logger_mock):
-            # Call the record_video handler, which should then call download_video
-            await main.record_video(mock_update, mock_context)
+        # We call duration_button_callback, which then calls download_video
+        with patch('main.logger', logger_mock), patch('builtins.open', mock_open):
+            await main.duration_button_callback(mock_callback_query_update, mock_context)
 
-        # Assertions
-        # 1. Initial message + probing message + downloading 0%
-        assert mock_context.bot.edit_message_text.call_count >= 2 # Probing, Downloading 0% at least
-        mock_context.bot.edit_message_text.assert_any_call(
-            chat_id=mock_update.effective_chat.id,
-            message_id=mock_update.message.message_id, # Assuming initial reply_text gives a message with this ID
-            text="Inspecting video stream..."
+        # Assertions for duration_button_callback part
+        mock_callback_query_update.callback_query.answer.assert_called_once()
+        mock_context.bot.edit_message_text.assert_any_call( # Message edit by duration_button_callback
+            chat_id=mock_callback_query_update.effective_chat.id,
+            message_id=prompt_message_id,
+            text=f"Duration selected: {user_friendly_duration}.\nPreparing to record from:\n<code>{main.html.escape(test_url)}</code>",
+            reply_markup=None,
+            parse_mode='HTML'
         )
-        mock_context.bot.edit_message_text.assert_any_call(
-            chat_id=mock_update.effective_chat.id,
-            message_id=mock_update.message.message_id,
-            text="Downloading: 0%"
-        )
+        assert str(prompt_message_id) not in mock_context.user_data # User data cleared
 
-        # 2. Progress messages (based on mock_ffmpeg_process and total_duration_ms)
-        # Total duration is 120.5s = 120500 ms
-        # Progress points: 0.5s (0%), 1s (0%), 60s (49% -> rounded to 45% or 50% by logic), 120s (99%)
-        # The logic is `percentage % 5 == 0 or percentage >= 99`
-        # 0% is sent initially.
-        # 60000ms / 120500ms = 0.4979 -> 49%. Not % 5.
-        # 120000ms / 120500ms = 0.9958 -> 99%. This should be sent.
+        # Assertions for download_video part (messages are edited on the original prompt_message_id)
+        # Initial "Inspecting" message
         mock_context.bot.edit_message_text.assert_any_call(
-            chat_id=mock_update.effective_chat.id,
-            message_id=mock_update.message.message_id,
-            text="Downloading: 99%" # Based on 120s / 120.5s
+            chat_id=mock_callback_query_update.effective_chat.id,
+            message_id=prompt_message_id,
+            text=f"Recording for {user_friendly_duration}. Inspecting video stream..."
+        )
+        # "Downloading 0%" message
+        mock_context.bot.edit_message_text.assert_any_call(
+            chat_id=mock_callback_query_update.effective_chat.id,
+            message_id=prompt_message_id,
+            text=f"Recording for {user_friendly_duration}: 0%"
         )
 
-        # 3. Download complete, then uploading message
+        # Progress update from read_progress (using user_friendly_duration)
+        # Probed duration is 120.5s. ffmpeg process gives 120s. Limit is 300s.
+        # Progress should be based on 300s (duration_limit_seconds)
+        # 120s / 300s = 40%
         mock_context.bot.edit_message_text.assert_any_call(
-            chat_id=mock_update.effective_chat.id,
-            message_id=mock_update.message.message_id,
-            text="Download complete! Now uploading video..."
+            chat_id=mock_callback_query_update.effective_chat.id,
+            message_id=prompt_message_id,
+            text=f"Recording for {user_friendly_duration}: 40%"
         )
 
-        # 4. send_video called
+        # Upload related messages
+        mock_context.bot.edit_message_text.assert_any_call(
+            chat_id=mock_callback_query_update.effective_chat.id,
+            message_id=prompt_message_id,
+            text=f"Successfully recorded for {user_friendly_duration}. Now uploading video...",
+            reply_markup=None
+        )
         mock_context.bot.send_video.assert_called_once()
-        send_video_args = mock_context.bot.send_video.call_args
-        assert send_video_args[1]['chat_id'] == mock_update.effective_chat.id
-        assert send_video_args[1]['filename'] == main.OUTPUT_FILENAME
-        assert 'video' in send_video_args[1] # Check that a file object is passed
-        assert send_video_args[1]['write_timeout'] == 1800
+        send_video_args = mock_context.bot.send_video.call_args[1]
+        assert send_video_args['caption'] == f"Here is your video (recorded for {user_friendly_duration})."
 
-
-        # 5. Upload successful message
         mock_context.bot.edit_message_text.assert_any_call(
-            chat_id=mock_update.effective_chat.id,
-            message_id=mock_update.message.message_id,
-            text="Video uploaded successfully!"
+            chat_id=mock_callback_query_update.effective_chat.id,
+            message_id=prompt_message_id,
+            text=f"Video (recorded for {user_friendly_duration}) uploaded successfully!",
+            reply_markup=None
         )
 
-        # 6. os.remove called
-        # Need to patch open for the send_video part for this to be clean
-        with patch('builtins.open', MagicMock()):
-             mock_os_remove.assert_called_with(main.OUTPUT_FILENAME)
+        mock_os_remove.assert_called_with(main.OUTPUT_FILENAME)
+        mock_open.assert_called_with(main.OUTPUT_FILENAME, 'rb')
 
 
     @patch('main.os.path.exists')
